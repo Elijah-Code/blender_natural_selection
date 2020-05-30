@@ -7,6 +7,8 @@ import random
 import bpy
 import numpy as np
 import mathutils
+from itertools import chain
+import copy
  
  
  
@@ -144,6 +146,7 @@ class Board:
         self.grid = []
         self.potatoes = []
         self.candies  = []
+        self.eaten_candies = []
  
         self.init_potatoes_nb = init_potatoes_nb
         self.init_candies_nb  = init_candies_nb
@@ -167,6 +170,12 @@ class Board:
                 objs.append(box)
  
         return objs
+
+    def clear(self):
+        self.init_grid()
+        self.potatoes = []
+        self.candies = []
+        self.eaten_candies = []
  
     def init_grid(self):
  
@@ -192,6 +201,7 @@ class Board:
     def del_candy(self, candy):
         candy.box.remove(candy)
         self.candies.remove(candy)
+        self.eaten_candies.append(candy)
  
     def del_potato(self, potato):
         potato.box.remove(potato)
@@ -202,8 +212,8 @@ class Board:
         new_box = self.grid[new_pos[1]][new_pos[0]]
         potato.move(new_box)
  
-    def first_gen(self):
-        self.init_grid()
+    def new_gen(self, potatoes_nb, candy_nb):
+        self.clear()
  
         # Create a list of all possible places on the map
         possible_places = []
@@ -214,46 +224,37 @@ class Board:
         random.shuffle(possible_places)
  
         # Put 10 candies at random places
-        for _ in range(self.init_candies_nb):
+        for _ in range(candy_nb):
             candy_loc = possible_places.pop()
             self.add_candy(*candy_loc)
  
-        for _ in range(self.init_potatoes_nb):
+        for _ in range(potatoes_nb):
             potato_loc = possible_places.pop()
             self.add_potato(*potato_loc)
+
+    def first_gen(self):
+        self.new_gen(self.init_potatoes_nb, self.init_candies_nb)
+
+    def next_state(self):
+        self.eaten_candies = []
  
     def next_gen(self):
-        self.init_grid()
-        # Create a list of all possible places on the map
-        possible_places = []
-        for i in range(len(self.grid)):
-            for j in range(len(self.grid[0])):
-                possible_places.append([i,j])
- 
-        random.shuffle(possible_places)
- 
-        # Put 10 candies at random places
-        for _ in range(self.init_candies_nb):
-            candy_loc = possible_places.pop()
-            self.add_candy(*candy_loc)
+        next_gen_potatoes_nb = 0
+        next_gen_candies_nb = self.init_candies_nb
  
         for potato in self.potatoes:
             # Delete dead potatoes
             if potato.eaten_count == 0:
-                self.del_potato(potato)
+                pass
  
             elif potato.eaten_count == 1:
-                self.del_potato(potato)
-                potato_loc = possible_places.pop()
-                self.add_potato(*potato_loc)
+                next_gen_potatoes_nb += 1
  
             # Spawn new potatoes
             elif potato.eaten_count > 1:
-                potato_loc = possible_places.pop()
-                self.add_potato(*potato_loc)
- 
-            # Reset eaten count
-            potato.eaten_count = 0
+                next_gen_potatoes_nb += 2
+
+        self.new_gen(next_gen_potatoes_nb, next_gen_candies_nb)
  
  
     def state(self, infos=[]):
@@ -313,12 +314,11 @@ class Board:
         log.update(infos)
  
         return log
- 
+
  
 def natural_selection(board, nb_gen=10, max_days=25, print_state=False, log_path=""):
     state = []
     board.first_gen()
-    print(nb_gen)
     for gen_ix in range(nb_gen):
  
         stop_gen = False
@@ -356,6 +356,8 @@ def natural_selection(board, nb_gen=10, max_days=25, print_state=False, log_path
                 stop_gen = True
  
             yield (board, gen_ix)
+
+            board.next_state()
  
         # Check if there are still potatoes
         if not len(board.potatoes):
@@ -373,11 +375,14 @@ def natural_selection(board, nb_gen=10, max_days=25, print_state=False, log_path
     print("{} Potatoes at the end".format(len(board.potatoes)))
  
  
-if __name__ == "__main__":
-    GENS = 1
-    DAYS = 1
-    board = Board((10,10), init_potatoes_nb=2, init_candies_nb=5)
-    natural_selection(board, nb_gen=GENS, max_days=DAYS)
+
+GENS = 3
+DAYS = 2
+board = Board((10,10), init_potatoes_nb=2, init_candies_nb=5)
+n = natural_selection(board, nb_gen=GENS, max_days=DAYS)
+for x in n:
+    print("Gen nb:", x[1], "Board:", x[0].potatoes)
+
 ##### END OF NATURAL SELECTION #####
  
 # TODO: Merge the potatoes parts into one object
@@ -423,26 +428,25 @@ def spawn_from_model(model, x, y, z):
     return object
  
 def del_object(obj):
-    deselect_everything()
-    select_all_children(obj)
-    bpy.ops.object.delete()
+    bpy.data.objects.remove(obj, do_unlink=True)
  
 def hide_object(obj, frame=None):
-    deselect_everything()
-    for child in get_all_children(obj):
-        child.hide_viewport = True
-        if frame is not None:
-            print("OBJ:",obj, "HIDDEN AT FRAME", frame)
+    
+    obj.hide_viewport = True
+    if frame is not None:
+        obj.keyframe_insert(data_path="hide_viewport", frame=frame)
  
 def unhide_object(obj, frame=None):
-    deselect_everything()
-    for child in get_all_children(obj):
-        child.hide_viewport = False
-        if frame is not None:
-            child.keyframe_insert(data_path="hide_viewport", frame=frame)
+    obj.hide_viewport = False
+    if frame is not None:
+        obj.keyframe_insert(data_path="hide_viewport", frame=frame)
  
  
 class BlenderObjWrapper:
+
+    def __init__(self):
+        self.born_frame = None
+        self.death_frame = None
  
     @classmethod
     def spawn(cls, x, y, z=0, name='auto'):
@@ -480,6 +484,7 @@ class Candy(BlenderObjWrapper):
     objects = []
  
     def __init__(self, obj):
+        super().__init__()
         Candy.objects.append(self)
         self.obj = obj
  
@@ -493,6 +498,7 @@ class Potato(BlenderObjWrapper):
         """
         obj is the base circle of the potato
         """
+        super().__init__()
         Potato.objects.append(self)
         self.obj = obj
  
@@ -624,11 +630,9 @@ class Animation:
  
                 x_scale, y_scale = self.scale_coords(occupant.coords)
                 blender_obj = blender_cls.spawn(x=x_scale, y=y_scale)
- 
-                print("HIDE OBJ: {}, REVEAL IT AT {}".format(occupant, frame_ix))
-                # Hide it from the beginning and until now
-                blender_obj.hide_at_frame(0)
-                blender_obj.unhide_at_frame(frame_ix)
+
+                blender_obj.born_frame = frame_ix
+
  
                 # Map it
                 self.map[dict_name][occupant.id] = blender_obj
@@ -641,21 +645,34 @@ class Animation:
                     dict_name   = "Potatoes"
                 elif type(occupant) == Bonbon:
                     dict_name   = "Candies"
+  
  
                 blender_obj = self.map[dict_name][occupant.id]
  
                 # Hide it from now until the end
-                blender_obj.hide_at_frame(frame_ix)
+                blender_obj.death_frame = frame_ix
  
     def apply_state(self, state, prev_state, frame_ix):
-        prev_state_objs = []
-        if prev_state: # TODO: Code this better
-            # Get all the previous state objects
-            for box in prev_state.get_objects():
-                for occupant in box.occupants:
-                    if occupant:
-                        prev_state_objs.append(occupant)
- 
+        
+        prev_candies = []
+        for box in prev_state.get_objects():
+            for occupant in box.occupants:
+                if type(occupant) == Bonbon:
+                    prev_candies.append(occupant)
+
+        for box in state.get_objects():
+            for occupant in box.occupants:
+                if type(occupant) == Bonbon:
+                    try:
+                        prev_candies.remove(occupant)
+                    except:
+                        print("EXCEPTION ON CANDY", occupant.id)
+
+        for candy in prev_candies:
+            blender_obj = self.map["Candies"][candy.id]
+            blender_obj.death_frame = frame_ix
+
+        
         for box in state.get_objects():
             for occupant in box.occupants:
                 # Fetch obj
@@ -663,10 +680,7 @@ class Animation:
                     dict_name   = "Potatoes"
                 elif type(occupant) == Bonbon:
                     dict_name   = "Candies"
- 
-                if prev_state:
-                    # I know this object is still alive, so I remove it from prev_state_objs
-                    prev_state_objs.remove(occupant)
+
  
                 # Retrieve blender obj
                 blender_obj = self.map[dict_name][occupant.id]
@@ -674,41 +688,44 @@ class Animation:
                 # Move blender obj
                 x_scale, y_scale = self.scale_coords(occupant.coords)
                 blender_obj.move(x_scale, y_scale, frame=frame_ix)
- 
-        # Hide all the objects that are in prev_state_objs, those objects were eatten
-        for obj in prev_state_objs:
-            blender_obj = self.map[dict_name][occupant.id]
-            blender_obj.hide_at_frame(frame_ix)
- 
+
+
+
     def run(self):
- 
+
         frame_ix = 0
         prev_gen_ix = -1
         prev_state  = None
- 
+
         for board, gen_ix in self.ns:
-            print("-----------------------------------GEN:-----------------------------------", gen_ix)
+            print("===Frame:",frame_ix)
+
+            print("=======GEN:", gen_ix)
             # First state of the generation ?
             if gen_ix != prev_gen_ix:
- 
-                # Wipe previous generation
-                # DELETED - NO NEED IF THE POTATOES REMAINS THE SAME OBJECT
-                #if gen_ix > 0:
-                #    self.next_gen(prev_state, frame_ix)
- 
                 # Init new objects
                 self.init_gen_objs(board, frame_ix)
- 
+                if gen_ix > 0:
+                    self.next_gen(prev_state, frame_ix)
             else:
                 self.apply_state(board, prev_state, frame_ix)
- 
+
             # Increment frame
             frame_ix    += 30*(1 / self.fps)
             prev_gen_ix  = gen_ix
-            prev_state   = board
- 
- 
- 
+            prev_state   = copy.deepcopy(board)
+
+        for dic in chain(self.map.values()):
+            for blender_obj in dic.values():
+                if blender_obj.death_frame is None:
+                    blender_obj.death_frame = frame_ix
+                blender_obj.hide_at_frame(0)
+                blender_obj.unhide_at_frame(blender_obj.born_frame)
+                blender_obj.hide_at_frame(blender_obj.death_frame)
+
+
+
+
 def clean_objects():
     start = ["Candy.", "Potato."]
     for obj in bpy.data.objects:
@@ -727,11 +744,11 @@ if __name__ == "__main__":
  
     animation = Animation(
                  nb_gens=4,
-                 max_days=5,
+                 max_days=50,
                  board_size=(10,10),
                  init_potatoes_nb=10,
                  init_candies_nb=10,
-                 scale=2,
+                 scale=5,
                  fps=3,
     )
     animation.run()
